@@ -22,12 +22,13 @@ namespace DNSUpdater
     {
         private readonly ILogger<Worker> _logger;
         private readonly IHttpClientFactory _httpClientFactory;
-        private readonly IConfiguration _configuration;
         private readonly string _region;
         private readonly string _accessKeyId;
         private readonly string _secret;
         private readonly string _domainName;
         private readonly string _rr;
+        private readonly string _ip;
+        private readonly DefaultAcsClient _acsClient;
 
         public Worker(ILogger<Worker> logger,
                       IHttpClientFactory httpClientFactory,
@@ -35,77 +36,39 @@ namespace DNSUpdater
         {
             _logger = logger;
             _httpClientFactory = httpClientFactory;
-            _configuration = configuration;
 
             _region = configuration["ali:region"] ?? "cn-hangzhou";
             _accessKeyId = configuration["ali:accessKeyId"];
             _secret = configuration["ali:secret"];
             _domainName = configuration["domainName"];
             _rr = configuration["rr"];
+            _ip = configuration["ip"] ?? "https://api.lcrun.com/ip";
+
+            var profile = DefaultProfile.GetProfile(_region, _accessKeyId, _secret);
+            _acsClient = new DefaultAcsClient(profile);
         }
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
-            IClientProfile profile = DefaultProfile.GetProfile(_region, _accessKeyId, _secret);
-            DefaultAcsClient client = new DefaultAcsClient(profile);
-
-            var httpClient = _httpClientFactory.CreateClient();
-
-            var recordsRequest = new DescribeDomainRecordsRequest
-            {
-                DomainName = _domainName,
-                RRKeyWord = _rr
-            };
-
             while (!stoppingToken.IsCancellationRequested)
             {
                 try
                 {
-                    var ip = await httpClient.GetStringAsync("http://ifconfig.me");
+                    string ip = await GetPublicNetWorkIP();
 
-                    var recordResponse = client.GetAcsResponse(recordsRequest);
-                    var recordStringResult = Encoding.Default.GetString(recordResponse.HttpResponse.Content);
-                    var recordJsonResult = JsonConvert.DeserializeObject<JObject>(recordStringResult);
-                    if (recordJsonResult["TotalCount"].Value<int>() == 0)
+                    (string recordId, string currentIP) = GetDNSRecord();
+
+                    if (string.IsNullOrWhiteSpace(recordId))
                     {
-                        // 新增
-                        var addRequest = new AddDomainRecordRequest()
-                        {
-                            DomainName = _domainName,
-                            RR = _rr,
-                            Type = "A",
-                            _Value = ip
-                        };
-                        var addResponse = client.GetAcsResponse(addRequest);
-                        var addStringResult = Encoding.Default.GetString(recordResponse.HttpResponse.Content);
-                        var addJsonResult = JsonConvert.DeserializeObject<JObject>(addStringResult);
-
-                        _logger.LogInformation($"{DateTimeOffset.Now} 新增：{_rr}.{_domainName}->{ip}");
+                        AddDNS(ip);
+                    }
+                    else if (!ip.Equals(currentIP))
+                    {
+                        UpdateDNS(recordId, ip);
                     }
                     else
                     {
-                        // 更新
-                        var recordId = recordJsonResult["DomainRecords"]["Record"][0]["RecordId"].ToString();
-                        var currentIP = recordJsonResult["DomainRecords"]["Record"][0]["Value"].ToString();
-                        if (ip.Equals(currentIP))
-                        {
-                            _logger.LogInformation($"{DateTimeOffset.Now} IP未变更：{_rr}.{_domainName}->{ip}");
-                        }
-                        else
-                        {
-                            var updateRequest = new UpdateDomainRecordRequest()
-                            {
-                                RecordId = recordId,
-                                RR = ip,
-                                Type = "A",
-                                _Value = ip
-                            };
-                            var updateResponse = client.GetAcsResponse(updateRequest);
-                            var updateStringResult = Encoding.Default.GetString(recordResponse.HttpResponse.Content);
-                            var updateJsonResult = JsonConvert.DeserializeObject<JObject>(updateStringResult);
-
-                            _logger.LogInformation($"{DateTimeOffset.Now} 更新：{_rr}.{_domainName}->{ip}");
-                        }
+                        _logger.LogInformation($"IP no change：{_rr}.{_domainName}->{ip}");
                     }
 
                 }
@@ -120,6 +83,70 @@ namespace DNSUpdater
 
                 await Task.Delay(5000, stoppingToken);
             }
+
+            _logger.LogInformation($"Stop Work: stoppingToken:{stoppingToken.IsCancellationRequested}");
+        }
+
+        private (string recordId, string currentIP) GetDNSRecord()
+        {
+            var recordsRequest = new DescribeDomainRecordsRequest
+            {
+                DomainName = _domainName,
+                RRKeyWord = _rr
+            };
+            var recordResponse = _acsClient.GetAcsResponse(recordsRequest);
+            var recordStringResult = Encoding.Default.GetString(recordResponse.HttpResponse.Content);
+            var recordJsonResult = JsonConvert.DeserializeObject<JObject>(recordStringResult);
+            if (recordJsonResult["TotalCount"].Value<int>() == 0)
+            {
+                return (null, null);
+            }
+            else
+            {
+                var recordId = recordJsonResult["DomainRecords"]["Record"][0]["RecordId"].ToString();
+                var currentIP = recordJsonResult["DomainRecords"]["Record"][0]["Value"].ToString();
+                return (recordId, currentIP);
+            }
+        }
+
+        private void UpdateDNS(string recordId, string ip)
+        {
+            var updateRequest = new UpdateDomainRecordRequest()
+            {
+                RecordId = recordId,
+                RR = ip,
+                Type = "A",
+                _Value = ip
+            };
+            _ = _acsClient.GetAcsResponse(updateRequest);
+
+            _logger.LogInformation($"Update DNS：{_rr}.{_domainName}->{ip}");
+        }
+
+        private void AddDNS(string ip)
+        {
+            // 新增
+            var addRequest = new AddDomainRecordRequest()
+            {
+                DomainName = _domainName,
+                RR = _rr,
+                Type = "A",
+                _Value = ip
+            };
+            var addResponse = _acsClient.GetAcsResponse(addRequest);
+            var addStringResult = Encoding.Default.GetString(addResponse.HttpResponse.Content);
+            var addJsonResult = JsonConvert.DeserializeObject<JObject>(addStringResult);
+
+            _logger.LogInformation(addJsonResult.ToString());
+            _logger.LogInformation($"Add DNS：{_rr}.{_domainName}->{ip}");
+        }
+
+        private async Task<string> GetPublicNetWorkIP()
+        {
+            var httpClient = _httpClientFactory.CreateClient();
+            var ip = await httpClient.GetStringAsync(_ip);
+            _logger.LogInformation($"Public NetWork IP：{ip}");
+            return ip;
         }
     }
 }
