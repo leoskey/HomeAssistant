@@ -68,7 +68,7 @@ namespace DNSUpdater
                     }
                     else
                     {
-                        _logger.LogInformation($"IP no change£º{_rr}.{_domainName}->{ip}");
+                        _logger.LogInformation($"[IP no change] {_rr}.{_domainName} -> {ip}");
                     }
 
                 }
@@ -120,12 +120,11 @@ namespace DNSUpdater
             };
             _ = _acsClient.GetAcsResponse(updateRequest);
 
-            _logger.LogInformation($"Update DNS£º{_rr}.{_domainName}->{ip}");
+            _logger.LogInformation($"[Update DNS] {_rr}.{_domainName} ->  {ip}");
         }
 
         private void AddDNS(string ip)
         {
-            // ÐÂÔö
             var addRequest = new AddDomainRecordRequest()
             {
                 DomainName = _domainName,
@@ -138,14 +137,14 @@ namespace DNSUpdater
             var addJsonResult = JsonConvert.DeserializeObject<JObject>(addStringResult);
 
             _logger.LogInformation(addJsonResult.ToString());
-            _logger.LogInformation($"Add DNS£º{_rr}.{_domainName}->{ip}");
+            _logger.LogInformation($"[Add DNS] {_rr}.{_domainName} -> {ip}");
         }
 
         private async Task<string> GetPublicNetWorkIP()
         {
             var httpClient = _httpClientFactory.CreateClient();
             var ip = await httpClient.GetStringAsync(_ip);
-            _logger.LogInformation($"Public NetWork IP£º{ip}");
+            _logger.LogInformation($"[Public NetWork IP] {ip}");
             return ip;
         }
     }
